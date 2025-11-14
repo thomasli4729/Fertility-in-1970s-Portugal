@@ -1,0 +1,345 @@
+---
+title: "**The Influence of Marriage Patterns and Women's Literacy on Family Size in late 1970s Portugal**"
+author: "Betty Li & Thomas Li"
+subtitle: "**STA303 - Winter 2025 - Assignment 1**"
+output: pdf_document
+execute:
+  echo: false
+editor: visual
+format: pdf
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r dataDownload, include=FALSE}
+pUrl = 'http://wfs.dhsprogram.com/pt/ptsr01.dat'
+pName = file.path(tempdir(), 'portugal.dat')
+if(!file.exists(pName)) {
+  download.file(pUrl, pName)
+}
+
+datNames = rbind(
+		age=c(45,2),
+		ageMarried=c(149,2), 
+		monthsSinceM = c(157,4),
+#		failedPregnancies=c(421,2),
+#		failedPregStill=c(423,2),
+#		failedPregSpAb=c(425,2),
+		pregnancies=c(433,2),
+		children=c(435,2),
+		sons=c(443,2),
+#		firstBirthInterval = c(479,2),
+		region = c(641,2),
+		literacy = c(649,2)
+)
+		colnames(datNames ) = c('start','len')
+		datNames = cbind(startm1=datNames[,1]-1,datNames, sum=apply(datNames, 1,sum))
+		cbind(datNames[-1,1] , datNames[seq(1, nrow(datNames)-1),4])
+		datNames[-1,1] = datNames[-1,2] - datNames[seq(1, nrow(datNames)-1),4]
+		dWidths = as.vector(t(datNames[,c(1,3)]))
+		dNames = paste(rep(rownames(datNames), rep(2, nrow(datNames))),
+  	rep(c( "junk",""), nrow(datNames)), sep="") 
+		
+		dNames = dNames[dWidths > 0]
+		dWidths = dWidths[dWidths > 0]
+		
+		formats = list(
+			ageMarried = data.frame(code=1:7,  label=c(0,15,18,20,22,25,30)),
+			region = data.frame(code=1:5, 
+				label=c('lisbon','porto','20k+', '10-20k', 'lt10k')),
+			literacy = data.frame(code=1:2, label=c('yes','no')),
+			firstBirthInterval = data.frame(
+					code = 1:8,
+					label = c(
+							'lt0','0-7', '8-11','12-23',
+							'24-35','36-47','48-59','60-Inf'
+							)
+					)
+		)
+
+		formats$ageMarried$label = 
+  	paste(formats$ageMarried$label, 'to',
+  	c(formats$ageMarried$label[-1], 'Inf'), sep='')
+  	formats$ageMarried = rbind(formats$ageMarried, data.frame(code=88, label='never'))
+
+  portugal = read.fwf(
+    pName,
+    dWidths, col.names=dNames,
+    header=FALSE)
+  
+  portugal = portugal[,grep("junk$", names(portugal), invert=TRUE)]
+
+for(D in intersect(names(portugal), names(formats))){
+  		portugal[[D]] = factor(portugal[[D]],
+  			levels=formats[[D]]$code, 
+				labels=formats[[D]]$label)
+}
+portugal$ageMarried = relevel(portugal$ageMarried, '22to25')
+portugal$region = relevel(portugal$region, 'lt10k')
+
+if(FALSE) save(portugal, file='portugal.RData')
+```
+
+```{r, include = FALSE}
+required_packages <- c("patchwork", "kableExtra", "vioplot")
+for (p in required_packages) {
+  if (!require(p, character.only = TRUE)) {
+    install.packages(p, character.only = TRUE)
+  }
+}
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+library('glmmTMB')
+library(knitr)
+library(kableExtra)
+library(dplyr)
+library(tibble)
+library(vioplot)
+```
+
+# Introduction
+
+In the late 1970s, Portugal transitioned from a rural agricultural culture to a modernized family-planning society owing to family size, a crucial demographic indicator that profoundly impacted social structures. A critical examination of family size in late 1970s Portugal would provide tremendous insights into the causal implications behind the substantial societal shift.
+
+Adhikari’s (2010) research article records how early marriage and low literacy rates result in high fertility rates in Nepal, where the cultural norms encourage young motherhood and limit access to family planning knowledge. However, Martin (1995) rejects the linear assumption of the relationship between education and fertility, arguing that early education initially increases the birth rate but that higher education ultimately reduces it. Beyond literacy and age of marriage, Duncan et al. (1962) emphasize the role of marriage duration, concluding that longer marriages naturally bring more time for childbearing and, therefore, a greater cumulative number of births. These former studies have outlined how literacy, marriage age, and marriage duration shape fertility patterns in a complex way, offering valuable inferences that align with the goal of this report: provide a clear understanding of the factors that influence family size in Portugal in the late 1970 and generate insightful results into this historical context. The findings will not merely conclude on historical fertility patterns but also spark broader discussions on how these factors will transform societal structure across cultures and times.
+
+This report builds on data from the World Fertility Survey: Portugal, conducted during 1979 and 1980. The dataset contains information from multiple aspects of the families and the parents, but this report will focus on analyzing the influence of the mother’s literacy, the mother’s age at marriage, and the duration of the marriage on family size using a generalized linear model approach.
+
+# Methods
+
+To model the effect of **literacy** and **age at marriage** on **family size** in Portugal, we will apply a Generalized Linear Model (GLM) in this study. The response variable family size is a count variable, which implies that a Poisson regression model is the most suitable model to be applied. The mean and variance should be equal under the assumption of a Poisson regression model. If the variance is much greater than the mean, over-dispersion exists. We will switch to the Negative Binomial model, which includes a dispersion parameter to adjust the variation.
+
+The predictor variables of interests are **age at marriage** (ageMarried) and **literacy** (literacy). **Age** **at marriage** is a categorical variable with 7 levels and could influence the number of children since marrying younger provides more time for having children. **Literacy** is a binary variable showing the level of education, which can significantly impact reproductive choices and access to family planning. In addition, we include another control variable: months since marriage (monthsSinceM). **Months since marriage** demonstrate the period to have childbirth opportunities, which could significantly impact family size, according to the literature we found. An offset in covariate with log of years since marriage (months are converted into years) will be implemented into the model, which allows us to compare fertility rates per unit of time rather than just the counts of children.
+
+The number of children per person is modelled as:
+
+$$Y_i \sim \text{Poisson}(\mu_i O_i) \quad$$
+
+Then, we will build the model:
+
+$$\log(\mu_i) = \beta_0 + \beta_1 \text{literacy} + \beta_2 I_1 + \beta_3 I_2 + \beta_4 I_3 + \beta_5 I_4 + \beta_6 I_5 + \beta_7 I_6 + \log(O_i)$$
+
+where $\mu_i$ is the expected number of children per unit exposure time per person, and $O_i$ is the offset term representing the total exposure time. Indicators $I_1$ to $I_6$ represent 7 categories (including the reference category) of age married. The parameters $\beta_0$, $\beta_1$, $\beta_2$, $\beta_3$ represent the estimated effects of each predictor variable. Including the offset term ensures that people who have been married for different periods are appropriately accounted for.
+
+If over-dispersion exists, the number of children per person will be modeled as:
+
+$$Y_i \sim \text{Negetive Binomial}(\mu_i O_i, \tau)$$
+
+We will perform an ANOVA test on the model to determine the significant predictors. A 5% significance level will be used to determine statistical significance, and the 95% confidence intervals will be calculated.
+
+# Results
+
+The following data table, with numerical summaries and six graphic summary plots, demonstrates all relevant variables’ basic distributions and relationships. For a more straightforward interpretation, **months since married** is mutated to **years since married**.
+
+|    **Variables**    |   **Min**    | **1st Quartile** |  **Median**  |   **Mean**   | **3rd Quartile** |   **Max**    | **Variance** |
+|:-------:|:-------:|:-------:|:-------:|:-------:|:-------:|:-------:|:-------:|
+|         Age         |    15.00     |      28.75       |    36.00     |    35.30     |      43.00       |    49.00     |    70.385    |
+| Years Since Married |      0       |       6.08       |    12.33     |    12.93     |      19.17       |    35.92     |    62.280    |
+|     Pregnancies     |      0       |        1         |      2       |    2.282     |        3         |      16      |    3.317     |
+|      Children       |      0       |        1         |      2       |     2.26     |        3         |      17      |    3.464     |
+|        Sons         |      0       |        0         |      1       |    1.187     |        3         |      10      |    1.474     |
+|   **Age Married**   | **0 \~ 15**  |   **15 \~ 18**   | **18 \~ 20** | **20 \~ 22** |   **22 \~ 25**   | **25 \~ 30** |   **30+**    |
+|                     |      52      |       452        |     910      |     1126     |       1468       |     923      |     217      |
+|     **Region**      |  **Lisbon**  |    **Porto**     |  **\<10k**   | **10k\~20k** |     **20k+**     |              |              |
+|                     |     470      |       160        |     3502     |     433      |       563        |              |              |
+|    **Literacy**     | **Literate** |  **Illiterate**  |              |              |                  |              |              |
+|                     |     4567     |       581        |              |              |                  |              |              |
+
+***Table 1.** Statistical summaries of the data, the relevant variables, and their categories and distributions.*
+
+```{r, include = FALSE}
+portugal <- portugal %>% mutate(ageMarried_mutate = case_when(
+                           ageMarried == "0to15" ~ "0~15",
+                           ageMarried == "15to18" ~ "15~18",
+                           ageMarried == "18to20" ~ "18~20",
+                           ageMarried == "20to22" ~ "20~22",
+                           ageMarried == "22to25" ~ "22~25",
+                           ageMarried == "25to30" ~ "25~30",
+                           ageMarried == "30toInf" ~ "30+"))
+
+portugal <- portugal %>% mutate(region_mutate = case_when(
+                           region == "lisbon" ~ "Lisbon",
+                           region == "porto" ~ "Porto",
+                           region == "lt10k" ~ "<10k",
+                           region == "10-20k" ~ "10~20k",
+                           region == "20k+" ~ "20k+"))
+
+portugal <- portugal %>% mutate(literacy_mutate = case_when(
+                           literacy == "yes" ~ "Literate",
+                           literacy == "no" ~ "Illiterate"))
+
+portugal$ageMarried <- factor(portugal$ageMarried, 
+      levels = c("0to15", "15to18", "18to20", "20to22", "22to25", "25to30", "30toInf"))
+
+portugal$ageMarried_mutate <- factor(portugal$ageMarried_mutate, 
+        levels = c("0~15", "15~18", "18~20", "20~22", "22~25", "25~30", "30+"))
+
+portugal$region <- factor(portugal$region, 
+                          levels = c("lisbon", "porto", "lt10k", "10-20k", "20k+"))
+
+portugal$region_mutate <- factor(portugal$region_mutate, 
+                          levels = c("Lisbon", "Porto", "<10k", "10~20k", "20k+"))
+
+portugal$literacy <- factor(portugal$literacy, levels = c("yes", "no"))
+
+portugal$literacy_mutate <- factor(portugal$literacy_mutate, 
+                            levels = c("Literate", "Illiterate"))
+
+portugal <- portugal %>% mutate(yearsSinceM = round(monthsSinceM/12, 2))
+```
+
+```{r, fig.width=10, fig.height=4, fig.align="center"}
+par(mfrow = c(2, 3))
+
+par(mar = c(4, 4, 4, 2))
+child_tab <- table(portugal$children, portugal$literacy_mutate)
+barplot(t(child_tab), beside = FALSE, col = c("steelblue", "firebrick3"), 
+        border = "white", main = "Distribution of Children by Literacy", 
+        xlab = "", ylab = "", cex.names = 0.8, yaxt = "n")
+axis(2, las = 1, cex.axis = 0.8)
+mtext("Number of Children", side = 1, line = 2.5, cex = 0.8)
+mtext("Frequency", side = 2, line = 3, cex = 0.8)
+legend("topright", legend = c("Literate", "Illiterate"), 
+       fill = c("steelblue", "firebrick3"), bty = "n")
+
+par(mar = c(5, 4, 4, 2), las = 2)
+barplot(table(portugal$ageMarried_mutate), col="#4E79A7", border="black",
+        main="Age at Marriage", xlab="Marriage Age", ylab="Count", 
+        names.arg = levels(portugal$ageMarried_mutate), cex.names=0.8)
+par(las = 0)
+
+par(mar = c(5, 4, 4, 2))
+hist(portugal$yearsSinceM, breaks=25, col="#4E79A7", border="black",
+     main="Years Since Marriage", xlab="Years", ylab="Count", yaxt = "n")
+axis(2, las = 1)
+
+par(mar = c(4, 4, 3.5, 2))
+pt_colors <- ifelse(portugal$literacy_mutate == "Literate", "steelblue", "firebrick3")
+plot(portugal$yearsSinceM, portugal$children, pch = 16, cex = 0.4,
+     col = adjustcolor(pt_colors, alpha.f = 0.5), 
+     main = "Years Since Marriage vs Children", 
+     xlab = "", ylab = "", yaxt = "n")
+axis(2, las = 1, cex.axis = 0.8)
+mtext("Years Since Marriage", side = 1, line = 2.5, cex = 0.8)
+mtext("Number of Children", side = 2, line = 2.5, cex = 0.8)
+legend("topleft", legend = c("Literate", "Illiterate"), 
+       col = c("steelblue", "firebrick3"),
+       pch = 16, pt.cex = 0.6, cex = 0.8, bty = "n")
+
+par(mar = c(5, 4, 2, 2))
+agg <- aggregate(children ~ ageMarried_mutate + literacy_mutate, 
+                 data = portugal, FUN = mean)
+mat <- with(agg, tapply(children, list(ageMarried_mutate, literacy_mutate), mean))
+bar_mid <- barplot(t(mat), beside = TRUE, col = c("steelblue", "firebrick3"),
+                   border = "white", 
+                   main = "Avg Children by Age Married & Literacy", 
+                   xlab = "", ylab = "", las = 2, cex.names = 0.8, yaxt = "n")
+axis(2, las = 1, cex.axis = 0.8)
+mtext("Age Married", side = 1, line = 3.5, cex = 0.8)
+mtext("Average Number of Children", side = 2, line = 2.5, cex = 0.8)
+legend("topright", inset = c(0, -0.04), legend = rownames(t(mat)), 
+       fill = c("steelblue", "firebrick3"), bty = "n", cex = 0.7, horiz = TRUE)
+
+par(mar = c(5, 4, 2.5, 2))
+age_groups <- levels(portugal$ageMarried_mutate)
+child_list <- lapply(age_groups, function(x) portugal$children[portugal$ageMarried_mutate == x])
+child_list <- unname(child_list)
+do.call(vioplot, c(child_list, 
+                   list(names = NULL, col = "#69b3a2", border = "darkgray", 
+                        main = "Children by Age of Marriage", xlab = "", 
+                        ylab = "", xaxt = "n", yaxt = "n")))
+axis(1, at = 1:length(age_groups), labels = age_groups, las = 2, cex.axis = 0.8)
+axis(2, las = 1, cex.axis = 0.8)
+mtext("Age Married", side = 1, line = 3.5, cex = 0.8)
+mtext("Number of Children", side = 2, line = 2.5, cex = 0.8)
+
+par(mfrow = c(1, 1))
+```
+
+***Figure 1.** Six summary plots on distributions and relationships of age married, years since married, literacy, and children.*
+
+The distribution plots show that **age married** is unimodal with a slight left skew. Meanwhile, the frequency counts for **years since marriage** exhibit a decreasing pattern as the year increases, which holds on the entire spread of data, from Year 0 to roughly Year 36. According to the table summaries, literate individuals are 7 times more than illiterate ones from this survey. **Children**, the response variable, is right-skewed with an unimodal peak at 2. It spreads from 0 to 17 children and centers at about 2 children.
+
+Regarding multivariate relationships, **age married**, **years since married**, and **literacy** are all likely to affect the number of **children**. Illiterate women seem to give birth more often, and those who entered marriages early saw higher fertility rates. Longer duration of marriage may also lead to larger family sizes. These patterns are a preliminary result of the pivotal contributors to more children in families, consistent with existing fertility studies.
+
+The data summaries show noticeable over-dispersion in the response variable **children**, with a much greater variance than the mean. Therefore, the Negative Binomial model will also be taken into consideration to fit the data.
+
+```{r}
+portugal$logYearsMarried = log(pmax(1, portugal$monthsSinceM)/12)
+portugal$ageMarried = relevel(portugal$ageMarried, "18to20")
+fijiFit = glm(children ~ offset(logYearsMarried) + 
+                literacy + ageMarried, data = portugal, family = poisson)
+knitr::kable(summary(fijiFit)$coef, digits = 3)
+
+fijiFitCI <- as.data.frame(exp(confint(fijiFit)[-1,]))
+fijiFitCI$level <- gsub(paste(names(fijiFit$xlevels), collapse = '|'), "", rownames(fijiFitCI))
+fijiFitCI$variable <- unlist(strsplit(rownames(fijiFitCI), fijiFitCI$level))
+fijiFitCI$x <- seq_len(nrow(fijiFitCI))
+fijiFitCI$cex <- sqrt(1 / apply(log(fijiFitCI[, 1:2]), 1, diff))
+forXaxis <- tapply(fijiFitCI$x, fijiFitCI$variable, mean)
+head(fijiFitCI)
+```
+
+***Table 2.** Summary table of the Poisson Regression model and the confidence intervals of the coefficients of the predictors.*
+
+We first built the Poisson regression model to analyze the relationship between literacy, age at marriage, and family size. The estimate for illiterate people is positive, with a p-value less than 0.05. This shows that literacy has a significant relationship with the number of children. The category of people who married between 22 and 25 years old has a statistically significant relationship with fertility, while other groups do not since their p-values are larger than 0.05.
+
+```{r}
+matplot(fijiFitCI[,1:2], type='n',
+   xaxt='n', bty='n', xaxt='n',
+   log='y', ylab='RR')
+segments(fijiFitCI$x, fijiFitCI[,1],
+   fijiFitCI$x, fijiFitCI[,2])
+points(fijiFitCI$x,
+   exp(fijiFit$coef[-1]), pch=15,
+   cex = fijiFitCI$cex, col = '#00000030')
+mtext(fijiFitCI$level, 1, at=fijiFitCI$x,
+   las=3, line=-1)
+mtext(names(forXaxis), 1, at=forXaxis,
+   line=-2)
+abline(h=1, lty=3)
+```
+
+***Figure 2.** Graph of the effect of predictors on the number of children.*
+
+The effect plot above visually shows the variance around these estimates. The confidence interval of literacy does not overlap with 1, which shows its significant relationship with the number of children. The confidence intervals for most age groups include 1, meaning their effects are not statistically significant. The variance of age at marriage is inconsistent across different categories. This suggests that the impact of age at marriage varies depending on the specific age range.
+
+```{r}
+library('glmmTMB')
+fijiNB = glmmTMB(children ~ offset(logYearsMarried) + literacy +
+   ageMarried, data = portugal,family=nbinom2)
+
+knitr::kable(
+   rbind(confint(fijiNB)[1:7,c(3,1,2)],
+ sd=1/sqrt(confint(fijiNB, parm='sigma'))[c(3,2,1)]), digits=3)
+
+fijiNBFitCI <- as.data.frame(exp(confint(fijiNB)[-1,]))
+fijiNBFitCI$level <- gsub(paste(names(fijiNB$xlevels), collapse = '|'), "", rownames(fijiNBFitCI))
+fijiNBFitCI$variable <- unlist(strsplit(rownames(fijiNBFitCI), 
+                                        fijiNBFitCI$level))
+fijiNBFitCI$x <- seq_len(nrow(fijiNBFitCI))
+fijiNBFitCI$cex <- sqrt(1 / apply(log(fijiNBFitCI[, 1:2]), 1, diff))
+forXaxis <- tapply(fijiNBFitCI$x, fijiNBFitCI$variable, mean)
+head(fijiNBFitCI, 3)
+```
+
+***Table 3.** Summary table of the Negative Binomial model and the confidence intervals of the coefficients of the predictors.*
+
+A Negative Binomial model was built to solve the over-dispersion problem, as it introduces a dispersion parameter to better model the response variable. The results from the Negative Binomial model provide more reliable estimates of the predictors. Literacy shows a higher likelihood of having more children than the original model. The effect of age at marriage on number of children is also more consistent. The dispersion parameter in the Negative Binomial model captures the excess variability, which makes the confidence intervals and hypothesis tests more accurate. Comparing the two models, the Negative Binomial model is clearly the better choice since it solves the problem of over-dispersion.
+
+# Conclusion
+
+The results from the Negative Binomial model suggest that illiterate women bear more children on average than literate ones, meaning that literacy significantly impacts family size. Despite Martin (1995) proposing the contrasting influences of lower and higher education on children born, our finding reveals a clear inverse linear relationship between literacy and fertility, contradicting any non-linear effect. Lastly, Adhikari’s (2010) finding of the negative correlation between literacy and fertility rates would support our conclusion. However, there is less consistency in the effect of age at marriage on family size since only the 22\~25 age group shows statistical significance.
+
+In conclusion, our model posits that fertility patterns in late 1970s Portugal are shaped by the dominant predictor of literacy and the moderate factor of age at marriage. Our finding offers valuable insights into how women’s education and marriage decisions could result in demographic changes and social structure shifts. It highlights the need to implement policies targeting education and marriage laws, thereby fostering family planning and further enhancing the nation’s development.
+
+# Bibliography
+
+1.  Adhikari, R. (2010). Demographic, socio-economic, and cultural factors affecting fertility differentials in Nepal. *BMC pregnancy and childbirth, 10*, 1–11.
+
+2.  Martin, T. C. (1995). Women’s education and fertility: results from 26 Demographic and Health Surveys. *Studies in family planning*, 187–202.
+
+3.  Duncan, O. D., Freedman, R., Coble, J. M., & Slesinger, D. P. (1965). Marital fertility and size of family of orientation. *Demography, 2(1)*, 508–515.
